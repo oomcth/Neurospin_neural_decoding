@@ -120,8 +120,8 @@ def read_raw(subject, run_id, events_return=False, modality="auditory"):
 if __name__ == "__main__":
     temp = read_raw('1', '01', True, "auditory")
 
-    temp[0].compute_psd(fmax=50).plot(picks="data", exclude="bads")
-    temp[0].plot(duration=10, n_channels=5)
+    # temp[0].compute_psd(fmax=50).plot(picks="data", exclude="bads")
+    # temp[0].plot(duration=10, n_channels=5)
 
     arr = temp[0].get_data()
     tensor_meg = torch.tensor(arr)

@@ -6,8 +6,7 @@ import numpy as np
 from operator import itemgetter as getter
 import pandas as pd
 from copy import copy
-import torchvision.transforms as transforms
-from tqdm import tqdm
+
 
 sigma = 0.05
 pixel_simga = 0.05
@@ -178,7 +177,7 @@ def generate_bag_All(subject, n_samples=2_000, freq_per_bag=0.4,
             (test_tensors, test_phonemes))
 
 
-def generate_samples_All(subject, samples_per_run, noise=True, resize=False):
+def generate_samples_All(subject, samples_per_run, noise=True):
 
     train_ids = ["01", "02", "03", "04", "05", "06", "07"]
     test_ids = ["09"]
@@ -211,13 +210,10 @@ def generate_samples_All(subject, samples_per_run, noise=True, resize=False):
         test_tensors += temp_tensors
         test_phonemes += temp_phonemes
 
-    train_tensors = uneven_stack(train_tensors, resize)
-    valid_tensors = uneven_stack(valid_tensors, resize)
-    test_tensors = uneven_stack(test_tensors, resize)
+    train_tensors = uneven_stack(train_tensors)
+    valid_tensors = uneven_stack(valid_tensors)
+    test_tensors = uneven_stack(test_tensors)
 
-    if resize:
-        print("resizing done")
-    print("clamping + deletion of certain rows")
     train_tensors[:, :-19, :] *= 10**12
     valid_tensors[:, :-19, :] *= 10**12
     test_tensors[:, :-19, :] *= 10**12
@@ -226,23 +222,18 @@ def generate_samples_All(subject, samples_per_run, noise=True, resize=False):
     valid_tensors.clamp(-100, 100)
     test_tensors.clamp(-100, 100)
 
-    print("done")
-
     if noise:
-        print("adding noise")
         train_tensors = add_noise(train_tensors)
         indices = torch.randperm(len(train_phonemes))
         temp_tensor = train_tensors[indices]
         temp_phonemes = list(getter(*indices.tolist())(train_phonemes))
         train_tensors = temp_tensor
         train_phonemes = temp_phonemes
-        print("done")
 
     # assert all(value in choices for value in train_phonemes)
     # assert all(value in choices for value in valid_phonemes)
     # assert all(value in choices for value in test_phonemes)
 
-    print("one hot encoding...")
     indices = [choices.index(value) for value in train_phonemes]
     train_phonemes = F.one_hot(torch.tensor(indices), num_classes=len(choices))
 
@@ -251,27 +242,10 @@ def generate_samples_All(subject, samples_per_run, noise=True, resize=False):
 
     indices = [choices.index(value) for value in test_phonemes]
     test_phonemes = F.one_hot(torch.tensor(indices), num_classes=len(choices))
-    print("done")
+
     train_tensors = train_tensors[:, :-19, :]
     valid_tensors = valid_tensors[:, :-19, :]
     test_tensors = test_tensors[:, :-19, :]
-
-    print('normalizing data')
-    train_tensors = (
-        (train_tensors - train_tensors.mean([1, 2], keepdim=True)) /
-        train_tensors.std([1, 2], keepdim=True)
-    )
-
-    valid_tensors = (
-        (valid_tensors - valid_tensors.mean([1, 2], keepdim=True)) /
-        valid_tensors.std([1, 2], keepdim=True)
-    )
-
-    test_tensors = (
-        (test_tensors - test_tensors.mean([1, 2], keepdim=True)) /
-        test_tensors.std([1, 2], keepdim=True)
-    )
-    print("done")
 
     return ((train_tensors, train_phonemes),
             (valid_tensors, valid_phonemes),
@@ -293,28 +267,16 @@ def add_noise(tensor):
     return temp
 
 
-def uneven_stack(tensors, resize=False):
-    if not resize:
-        n = len(tensors)
-        output_tensor = torch.zeros(n, 325, 50)
+def uneven_stack(tensors):
 
-        for i, tensor in enumerate(tensors):
-            n_cols = min(tensor.size(1), 50)
-            output_tensor[i, :, :n_cols] = tensor[:, :n_cols]
+    n = len(tensors)
+    output_tensor = torch.zeros(n, 325, 50)
 
-        return output_tensor
-    else:
-        transformation = transforms.Resize((325, 306), antialias=True)
+    for i, tensor in enumerate(tensors):
+        n_cols = min(tensor.size(1), 50)
+        output_tensor[i, :, :n_cols] = tensor[:, :n_cols]
 
-        tensors_redimensionnes = []
-        print("resizing")
-        for tensor in tqdm(tensors):
-            tensor = tensor.unsqueeze(0)
-            tensor_redimensionne = transformation(tensor)
-
-            tensors_redimensionnes.append(tensor_redimensionne)
-            del tensor
-        return torch.stack(tensors_redimensionnes).squeeze(1)
+    return output_tensor
 
 
 def generate_train_test_from_single(subject, run_id, n_samples,
@@ -377,15 +339,6 @@ def generate_train_test_from_single(subject, run_id, n_samples,
 
 
 if __name__ == "__main__":
-    data = generate_samples_All("1",  2_500, True, True)
-    torch.save(data, 'resized0.pth')
-    del data
-    data = generate_samples_All("1",  2_500, True, True)
-    torch.save(data, 'resized1.pth')
-    del data
-    data = generate_samples_All("1",  2_500, True, True)
-    torch.save(data, 'resized2.pth')
-    del data
-    data = generate_samples_All("1",  2_500, True, True)
-    torch.save(data, 'resized3.pth')
-    del data
+    data = generate_train_test_from_single("1", '01',  20_000, 0.8, True)
+    # data = generate_bag_All("1", 1_000, 0.6, 20)
+    torch.save(data, 'same.pth')

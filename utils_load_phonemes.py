@@ -2,6 +2,7 @@ import pandas as pd
 import textgrid
 import os
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 number_to_range = {
@@ -42,18 +43,21 @@ def get_phonemes(run_id):
 def print_histo(df_phonemes):
     mask_counts = df_phonemes['phoneme'].value_counts()
 
-    # Créer un histogramme
     plt.figure(figsize=(8, 6))
     mask_counts.plot(kind='bar', color='skyblue')
 
-    # Titres et labels
     plt.title('Occurrences des objets dans la colonne "mask"')
     plt.xlabel('Objets')
     plt.ylabel('Occurrences')
 
-    # Afficher l'histogramme
     plt.show()
 
 
 if __name__ == "__main__":
-    print_histo(get_phonemes("01"))
+    # print(np.unique(get_phonemes("01")['phoneme']).tolist())
+    # print(len(np.unique(get_phonemes("01")['phoneme']).tolist()))
+    # print_histo(get_phonemes("01"))
+    df = get_phonemes('01')
+    df['duration'] = df['end'] - df['start']
+    mean_durations = df.groupby('phoneme')['duration'].mean().sort_values(ascending=False)
+    print(mean_durations)
