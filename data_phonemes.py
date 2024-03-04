@@ -380,12 +380,15 @@ if __name__ == "__main__":
     data = generate_samples_All("1",  2_500, True, True)
     torch.save(data, 'resized0.pth')
     del data
+
     data = generate_samples_All("1",  2_500, True, True)
     torch.save(data, 'resized1.pth')
     del data
+
     data = generate_samples_All("1",  2_500, True, True)
     torch.save(data, 'resized2.pth')
     del data
+
     data = generate_samples_All("1",  2_500, True, True)
     torch.save(data, 'resized3.pth')
     del data

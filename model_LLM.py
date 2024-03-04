@@ -49,3 +49,8 @@ class Model(nn.Module):
         x = x.mean(dim=2)
 
         return self.linear(x)
+
+
+# en prennant le CNN mais cette fois si sur des images 306*306 en
+# resiazant les images on obtient la meme chose que sans resize.
+# il y a toujours ce semblable overfit sur la largeur des phonemes

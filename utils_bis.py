@@ -108,7 +108,7 @@ def read_raw(subject, run_id, events_return=False, modality="auditory"):
 
     # preproc raw
     raw.load_data()
-    raw = raw.filter(0.5, 20)
+    raw = raw.filter(5, 200)
 
     if events_return:
         return raw, meta, events[i]
@@ -120,16 +120,29 @@ def read_raw(subject, run_id, events_return=False, modality="auditory"):
 if __name__ == "__main__":
     temp = read_raw('1', '01', True, "auditory")
 
-    # temp[0].compute_psd(fmax=50).plot(picks="data", exclude="bads")
-    # temp[0].plot(duration=10, n_channels=5)
+    temp[0].compute_psd(fmax=50).plot(picks="data", exclude="bads")
+    temp[0].plot(duration=0.2, n_channels=5)
+
+    # Extraire les données de l'intervalle [1:600+i]
 
     arr = temp[0].get_data()
     tensor_meg = torch.tensor(arr)
-    print(tensor_meg)  # 325 * 62300 (623 secs)
-    print(tensor_meg.size())
-    input()
 
-    tensor = tensor_meg[:-20, 1000:1600]
+    arr = []
+    for i in range(101):
+        arr.append(tensor_meg[1, 600+i])
+    plt.plot(range(len(arr)), arr)
+    plt.xlabel('Index')
+    plt.ylabel('Valeur')
+    plt.title('Tracé des données pour différentes valeurs de i dans l\'intervalle [1:600+i]')
+    plt.legend()
+    plt.show()
+
+    # print(tensor_meg)  # 325 * 62300 (623 secs)
+    # print(tensor_meg.size())
+    # input()
+
+    tensor = tensor_meg[:-20, 54000:55000]
 
     print(torch.sum(torch.isinf(tensor) == True))
 

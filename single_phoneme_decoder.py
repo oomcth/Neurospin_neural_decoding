@@ -6,12 +6,44 @@ from torch.utils.data.dataloader import DataLoader, Dataset
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import random
-from model_LLM import Model
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
 
 choices = ['2', '9', '9~', '<p:>', '?', '@', 'A', 'E', 'H', 'J', 'O', 'R', 'S',
            'Z', 'a', 'a~', 'b', 'd', 'e', 'e~', 'f', 'g', 'i', 'j', 'k', 'l',
            'm', 'n', 'o', 'o~', 'p', 's', 't', 'u', 'v', 'w', 'y', 'z', 'N']
+
+
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3,
+                               stride=1, padding=1)
+        self.relu1 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3,
+                               stride=1, padding=1)
+        self.relu2 = nn.ReLU()
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.dropout = nn.Dropout(p=0.5)
+
+        self.fc = nn.Linear(32 * 76 * 25, 39)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.relu1(x)
+        x = self.pool1(x)
+        x = self.conv2(x)
+        x = self.relu2(x)
+        x = self.pool2(x)
+        x = self.dropout(x)
+        x = x.view(-1, 32 * 76 * 25)
+        x = self.fc(x)
+        return x
 
 
 class CNN_PhonemeOLD(nn.Module):
@@ -49,7 +81,9 @@ class CNN_Phoneme(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
         self.dropout = nn.Dropout(0.1)
 
-        self.fc1 = nn.Linear(128 * (306//8) * (100//8), 128)
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((38, 38))
+
+        self.fc1 = nn.Linear(128 * 38 * 38, 128)
         self.fc2 = nn.Linear(128, num_classes)
 
     def forward(self, x):
@@ -61,6 +95,8 @@ class CNN_Phoneme(nn.Module):
         x = self.dropout(x)
         x = F.relu(self.pool(self.conv3(x)))
 
+        x = self.adaptive_pool(x)
+
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
@@ -68,9 +104,19 @@ class CNN_Phoneme(nn.Module):
         return x
 
 
+class My_loss(nn.Module):
+    def __init__(self, num_classes=39):
+        super(My_loss, self).__init__()
+        self.loss = nn.CrossEntropyLoss()
+        self.other = nn.MSELoss()
+
+    def forward(self, x, y):
+        return self.loss(x, y) + 0.05 * self.other(x, torch.zeros_like(x))
+
+
 def train_and_plot_cnn(train_loader, test_loader, model,
-                       epochs=20, lr=10**(-4)/2):
-    criterion = nn.CrossEntropyLoss()
+                       epochs=20, lr=5*10**(-4)):
+    criterion = My_loss()
     optimizer = optim.AdamW(model.parameters(), lr=lr)
 
     train_losses = []
@@ -78,14 +124,14 @@ def train_and_plot_cnn(train_loader, test_loader, model,
     train_accuracies = []
     test_accuracies = []
 
-    for epoch in range(epochs):
+    for epoch in tqdm(range(epochs)):
         print("epoch: ", epoch+1)
         model.train()
         running_loss = 0.0
         correct = 0
         total = 0
 
-        for data in tqdm(train_loader):
+        for data in tqdm(train_loader, leave=False):
             inputs, labels = data
             optimizer.zero_grad()
 
@@ -215,6 +261,35 @@ def acc_per_class(model, test_loader):
                                len(test_loader.dataset))[:4] + '%')
 
 
+def calculate_empirical_probability(loader, model, n):
+    model.eval()
+    num_correct = [0] * 39
+    num_samples = [0] * 39
+    class_freq = np.zeros(39)
+    total_correct = 0
+    total_samples = 0
+    with torch.no_grad():
+        print("computing acc")
+        for inputs, targets in tqdm(loader):
+            outputs = model(inputs)
+            _, predicted = torch.topk(outputs, n, dim=1)
+            for i in range(targets.size(0)):
+                class_idx = targets[i].argmax().item()
+                num_samples[class_idx] += 1
+                class_freq[class_idx] += 1
+                if class_idx in predicted[i]:
+                    num_correct[class_idx] += 1
+                    total_correct += 1
+                total_samples += 1
+    probs = [num_correct[i] / (num_samples[i] + 10**(-8)) for i in range(39)]
+    total_prob = total_correct / total_samples
+    print(f"Total accuracy for top {n} predictions: {total_prob:.4f}")
+    for i in range(39):
+        print(f'Class {choices[i]}: Accuracy = {probs[i]:.4f},'
+              f' Frequency = {(100 * class_freq[i] / total_samples):.4f}')
+    return probs, class_freq
+
+
 class AttentionModule(nn.Module):
     def __init__(self, embed_size, heads):
         super(AttentionModule, self).__init__()
@@ -252,28 +327,126 @@ class AttentionRNN(nn.Module):
         return x
 
 
+def reg(probs, class_freq):
+    probs = np.array(probs)
+    class_freq = np.array(class_freq)
+
+    class_freq = class_freq.reshape(-1, 1)
+
+    model = LinearRegression()
+    model.fit(class_freq, probs)
+
+    r_squared = model.score(class_freq, probs)
+
+    print("If we take into account prob=0")
+    print("Coefficients: ", model.coef_)
+    print("Intercept: ", model.intercept_)
+    print("R-squared: ", r_squared)
+
+    predictions = model.predict(class_freq)
+
+    probs = np.array(probs)
+    class_freq = np.array(class_freq)
+
+    class_freq = class_freq.reshape(-1, 1)
+
+    nonzero_mask = probs != 0
+    probs_filtered = probs[nonzero_mask]
+    class_freq_filtered = class_freq[nonzero_mask]
+
+    model2 = LinearRegression()
+    model2.fit(class_freq_filtered, probs_filtered)
+
+    r_squared = model2.score(class_freq, probs)
+
+    print("If we don't take into account prob=0")
+    print("Coefficients: ", model2.coef_)
+    print("Intercept: ", model2.intercept_)
+    print("R-squared: ", r_squared)
+
+    predictions2 = model2.predict(class_freq)
+
+    total = class_freq.sum()
+
+    plt.scatter(class_freq, probs, label='Data Points')
+    plt.plot(np.linspace(0, class_freq.max(), 1000),
+             np.linspace(0, class_freq.max(), 1000) / total,
+             label='Bayes Line')
+    plt.plot(class_freq, predictions, color='red',
+             label='Regression Line')
+    plt.plot(class_freq, predictions2, color='orange',
+             label='Regression Line without zeros')
+    plt.xlabel('Class Frequency')
+    plt.ylabel('Probability')
+    plt.title('Linear Regression of Probability on Class Frequency')
+    plt.legend()
+    plt.show()
+
+
 if False:
     print("loading data")
     ((train_tensors, train_phonemes),
-     (valid_tensors, valid_phonemes),
-     (test_tensors, test_phonemes)) = torch.load('data_phoneme_eq_150d.pth')
+     (_, _),
+     (test_tensors, test_phonemes)) = torch.load('new_data_highf.pth')
+    # ((train_tensors2, train_phonemes2),
+    #  (_, _),
+    #  (_, _)) = torch.load('resized1.pth')
+
+    # train_tensors = torch.cat([train_tensors, train_tensors2], dim=0)
+    # train_phonemes = torch.cat([train_phonemes, train_phonemes2], dim=0)
+
+    train_tensors = train_tensors.float()
+    train_phonemes = train_phonemes.float()
+
+    # train_tensors = torch.unsqueeze(train_tensors, 1)
+    # test_tensors = torch.unsqueeze(test_tensors, 1)
+
+    test_tensors = test_tensors.float()
+    test_phonemes = test_phonemes.float()
+
+    class_probabilities = torch.mean(train_phonemes, dim=0)
+    random_accuracy = torch.sum(class_probabilities ** 2)
+    print("Random train accuracy for Bayes estimator:", random_accuracy.item())
+    class_probabilities = torch.mean(test_phonemes, dim=0)
+    random_accuracy = torch.sum(class_probabilities ** 2)
+    print("Random test accuracy for Bayes estimator:", random_accuracy.item())
+
+    proba_x1 = torch.mean(train_phonemes, dim=0)
+    proba_x2 = torch.mean(test_phonemes, dim=0)
+    dot_product = torch.dot(proba_x1, proba_x2)
+
+    print("Bayes benchmark:", dot_product.item())
 
     print("data preparation")
-    train_dataset = CustomDataset(train_tensors.float(),
-                                  train_phonemes.float())
-    test_dataset = CustomDataset(test_tensors.float(),
-                                 test_phonemes.float())
+    w, h = train_tensors.size(1), train_tensors.size(2)
+    c = train_phonemes.size(1)
 
+    train_tensors = train_tensors.view(train_tensors.size(0), -1)
+    test_tensors = test_tensors.view(test_tensors.size(0), -1)
+
+    train_dataset = CustomDataset(train_tensors,
+                                  train_phonemes)
+    test_dataset = CustomDataset(test_tensors,
+                                 test_phonemes)
+
+    print("batching")
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
-    model = CNN_Phoneme()
+    print("Creating model")
+    model = nn.Sequential(
+        nn.Linear(w*h, c)
+    )
+    # model = SimpleCNN()
+
+    del train_tensors
+    del train_phonemes
 
     print("training")
-    train_and_plot_cnn(train_loader, test_loader, model, 10)
+    train_and_plot_cnn(train_loader, test_loader, model, 50)
 
     print("saving model")
-    torch.save(model.state_dict(), "model.pt")
+    torch.save(model.state_dict(), "model_new_data_ridge.pt")
 elif False:
     bags = torch.load("data_phoneme_bag20;0.1;1000_150d.pth")
     models = []
@@ -318,27 +491,46 @@ elif True:
     print("loading data")
     ((train_tensors, train_phonemes),
      (valid_tensors, valid_phonemes),
-     (test_tensors, test_phonemes)) = torch.load('data_phoneme_eq_150d.pth')
+     (test_tensors, test_phonemes)) = torch.load('new_data_highf.pth')
 
     print("data preparation")
-    train_dataset = CustomDataset(train_tensors.float(),
-                                  train_phonemes.float())
-    test_dataset = CustomDataset(test_tensors.float(),
-                                 test_phonemes.float())
 
+    train_tensors = train_tensors.float()
+    train_phonemes = train_phonemes.float()
+
+    test_tensors = test_tensors.float()
+    test_phonemes = test_phonemes.float()
+
+    train_tensors = torch.unsqueeze(train_tensors, 1)
+    test_tensors = torch.unsqueeze(test_tensors, 1)
+
+    # w, h = train_tensors.size(1), train_tensors.size(2)
+    # c = train_phonemes.size(1)
+
+    # train_tensors = train_tensors.view(train_tensors.size(0), -1)
+    # test_tensors = test_tensors.view(test_tensors.size(0), -1)
+
+    train_dataset = CustomDataset(train_tensors,
+                                  train_phonemes)
+    test_dataset = CustomDataset(test_tensors,
+                                 test_phonemes)
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
-    model = AttentionRNN(50, 128, 128, 39)
-    model.load_state_dict(torch.load("modelRNN.pt"))
+    # model = nn.Sequential(
+    #     nn.Linear(w*h, c)
+    # )
+    model = SimpleCNN()
+
+    model.load_state_dict(torch.load("model_new_data.pt"))
     print("computing acc per classes")
-    acc_per_class(model, test_loader)
+    probs, freq = calculate_empirical_probability(test_loader, model, 1)
+    reg(probs, freq)
 
 exit()
 print("loading data")
 ((train_tensors, train_phonemes),
-    (valid_tensors, valid_phonemes),
-    (test_tensors, test_phonemes)) = torch.load('data_phoneme_eq_150d.pth')
+    (test_tensors, test_phonemes)) = torch.load('same.pth')
 
 print("data preparation")
 train_dataset = CustomDataset(train_tensors[:, :, :].float(),
@@ -349,10 +541,10 @@ test_dataset = CustomDataset(test_tensors[:, :, :].float(),
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-model = Model(5, num_heads=5)
+model = AttentionRNN(50, 100, 100, 39)
 
 print("training")
-train_and_plot_cnn(train_loader, test_loader, model, 2)
+train_and_plot_cnn(train_loader, test_loader, model, 500)
 
 print("saving model")
 torch.save(model.state_dict(), "modelLLM.pt")
