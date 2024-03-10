@@ -1,15 +1,16 @@
 
-import os
 import sys
 from pathlib import Path
-import matplotlib.pyplot as plt
-sys.path.append('neurospin-petit-prince-main/decoding/ntbk')
 import numpy as np
 import pandas as pd
 import mne
 import mne_bids
-import torch
+import matplotlib
 import matplotlib.pyplot as plt
+matplotlib.use('agg')
+from mne.preprocessing import find_bad_channels_maxwell
+
+sys.path.append('neurospin-petit-prince-main/decoding/ntbk')
 from utils import (
     match_list,
     add_syntax,
@@ -112,51 +113,24 @@ def read_raw(subject, run_id, events_return=False, modality="auditory"):
 
     if events_return:
         return raw, meta, events[i]
-
     else:
         return raw, meta
 
 
 if __name__ == "__main__":
-    temp = read_raw('1', '01', True, "auditory")
+    raw, _, _ = read_raw('7', '05', True, "auditory")
 
-    temp[0].compute_psd(fmax=50).plot(picks="data", exclude="bads")
-    temp[0].plot(duration=0.2, n_channels=5)
-
-    # Extraire les données de l'intervalle [1:600+i]
-
-    arr = temp[0].get_data()
-    tensor_meg = torch.tensor(arr)
-
-    arr = []
-    for i in range(101):
-        arr.append(tensor_meg[1, 600+i])
-    plt.plot(range(len(arr)), arr)
-    plt.xlabel('Index')
-    plt.ylabel('Valeur')
-    plt.title('Tracé des données pour différentes valeurs de i dans l\'intervalle [1:600+i]')
-    plt.legend()
-    plt.show()
-
-    # print(tensor_meg)  # 325 * 62300 (623 secs)
-    # print(tensor_meg.size())
+    # raw_sss = mne.preprocessing.maxwell_filter(raw)
+    # auto_noisy_chs, auto_flat_chs, auto_scores = find_bad_channels_maxwell(
+    #     raw,
+        # cross_talk=crosstalk_file,
+        # calibration=fine_cal_file,
+    #     return_scores=True,
+    #     verbose=True,
+    # )
+    # print(auto_noisy_chs)  # we should find them!
+    # print(auto_flat_chs)  # none for this dataset
     # input()
-
-    tensor = tensor_meg[:-20, 54000:55000]
-
-    print(torch.sum(torch.isinf(tensor) == True))
-
-    tensor_min = torch.min(tensor)
-    tensor_max = torch.max(tensor)
-    print(tensor_min, tensor_max)
-    print(tensor)
-    tensor = 255 * (tensor-tensor_min) / (tensor_max - tensor_min)
-    print(tensor)
-
-    plt.imshow(tensor.numpy(), cmap='gray')
-    plt.axis('off')  # Pour ne pas afficher les axes.
-    plt.show()
-
+    raw.compute_psd(fmax=200).plot(picks="data", exclude="bads")
+    raw.plot(duration=0.25, n_channels=5)
     input()
-    for i in temp[1].columns:
-        print(temp[1][i])

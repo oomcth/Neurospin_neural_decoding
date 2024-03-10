@@ -22,26 +22,36 @@ class SimpleCNN(nn.Module):
         self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3,
                                stride=1, padding=1)
         self.relu1 = nn.ReLU()
+        # self.nlayer1 = nn.LayerNorm([172, 100])  # plan
+        self.nlayer1 = nn.LayerNorm([16, 100])
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
 
         self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3,
                                stride=1, padding=1)
         self.relu2 = nn.ReLU()
+        # self.nlayer2 = nn.LayerNorm([32, 86, 50])  # plan
+        self.nlayer2 = nn.LayerNorm([32, 8, 50])
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
 
         self.dropout = nn.Dropout(p=0.5)
 
-        self.fc = nn.Linear(32 * 76 * 25, 39)
+        # self.fc = nn.Linear(40800, 39)
+        # self.fc = nn.Linear(34400, 39)
+        self.fc = nn.Linear(3200, 39)
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.relu1(x)
+        x = self.nlayer1(x)
         x = self.pool1(x)
         x = self.conv2(x)
         x = self.relu2(x)
+        x = self.nlayer2(x)
         x = self.pool2(x)
         x = self.dropout(x)
-        x = x.view(-1, 32 * 76 * 25)
+        # x = x.view(-1, 40800)  # mag
+        # x = x.view(-1, 34400)  # gradio
+        x = x.view(-1, 3200)
         x = self.fc(x)
         return x
 
@@ -114,7 +124,54 @@ class My_loss(nn.Module):
         return self.loss(x, y)
 
 
-def train_and_plot_cnn(train_loader, test_loader, model,
+class RNNModel(nn.Module):
+    def __init__(self, input_size=100, hidden_size=30, num_layers=2,
+                 output_size=39):
+        super(RNNModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+
+        self.rnn = nn.RNN(input_size=input_size,
+                          hidden_size=hidden_size,
+                          num_layers=num_layers,
+                          batch_first=True)
+
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
+
+        out, _ = self.rnn(x, h0)
+
+        out = self.fc(out[:, -1, :])
+
+        return out
+
+
+class GRUModel(nn.Module):
+    def __init__(self, input_size=16, hidden_size=32, num_layers=1,
+                 output_size=39):
+        super(GRUModel, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+
+        self.gru = nn.LSTM(input_size=input_size,
+                           hidden_size=hidden_size,
+                           num_layers=num_layers,
+                           batch_first=True)
+
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        x = x.transpose(1, 2)
+
+        out, _ = self.gru(x)
+
+        out = self.fc(out[:, -1, :])
+        return out
+
+
+def train_and_plot_cnn(train_loader, test_loader, valid_loader, model,
                        epochs=20, lr=5*10**(-4),
                        weight_decay=0.01):
     criterion = My_loss()
@@ -123,8 +180,10 @@ def train_and_plot_cnn(train_loader, test_loader, model,
                             weight_decay=weight_decay)
 
     train_losses = []
+    valid_losses = []
     test_losses = []
     train_accuracies = []
+    valid_accuracies = []
     test_accuracies = []
 
     for epoch in tqdm(range(epochs)):
@@ -156,9 +215,12 @@ def train_and_plot_cnn(train_loader, test_loader, model,
         train_accuracies.append(100 * correct / total)
 
         model.eval()
+        valid_loss = 0.0
         test_loss = 0.0
         correct = 0
+        valid_correct = 0
         total = 0
+        total_valid = 0
 
         print("testing...")
         with torch.no_grad():
@@ -173,12 +235,26 @@ def train_and_plot_cnn(train_loader, test_loader, model,
                 label_index = torch.argmax(labels, dim=1)
                 total += labels.size(0)
                 correct += (predicted == label_index).sum().item()
+            for data in tqdm(valid_loader):
+                images, labels = data
+                images = images.to("mps")
+                labels = labels.to("mps")
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                valid_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                label_index = torch.argmax(labels, dim=1)
+                total_valid += labels.size(0)
+                valid_correct += (predicted == label_index).sum().item()
 
         test_losses.append(test_loss / len(test_loader))
+        valid_losses.append(valid_loss / len(valid_loader))
         test_accuracies.append(100 * correct / total)
-
+        valid_accuracies.append(100 * valid_correct / total_valid)
         print(f'Epoch {epoch+1}, Train Loss: {train_losses[-1]:.4f}, '
               f'Train Accuracy: {train_accuracies[-1]:.2f}%, '
+              f'Valid Loss: {valid_losses[-1]:.4f}, '
+              f'Valid Accuracy: {valid_accuracies[-1]:.2f}%'
               f'Test Loss: {test_losses[-1]:.4f}, '
               f'Test Accuracy: {test_accuracies[-1]:.2f}%')
 
@@ -187,14 +263,16 @@ def train_and_plot_cnn(train_loader, test_loader, model,
     plt.subplot(1, 2, 1)
     plt.plot(train_losses, label='Train Loss')
     plt.plot(test_losses, label='Test Loss')
+    plt.plot(valid_losses, label='Valid Loss')
     plt.title('Loss per Epoch')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend()
 
     plt.subplot(1, 2, 2)
-    plt.plot(train_accuracies, label='Train Accuracy')
+    # plt.plot(train_accuracies, label='Train Accuracy')
     plt.plot(test_accuracies, label='Test Accuracy')
+    plt.plot(valid_accuracies, label='Valid Accuracy')
     plt.title('Accuracy per Epoch')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
@@ -393,8 +471,8 @@ def reg(probs, class_freq):
 if True:
     print("loading data")
     ((train_tensors, train_phonemes),
-     (_, _),
-     (test_tensors, test_phonemes)) = torch.load('-190.pth')
+        (valid_tensors, valid_phonemes),
+        (test_tensors, test_phonemes)) = torch.load('smths.pth')
     # ((train_tensors2, train_phonemes2),
     #  (_, _),
     #  (_, _)) = torch.load('resized1.pth')
@@ -405,11 +483,15 @@ if True:
     train_tensors = train_tensors.float()
     train_phonemes = train_phonemes.float()
 
-    # train_tensors = torch.unsqueeze(train_tensors, 1)
-    # test_tensors = torch.unsqueeze(test_tensors, 1)
+    valid_tensors = valid_tensors.float()
+    valid_phonemes = valid_phonemes.float()
 
     test_tensors = test_tensors.float()
     test_phonemes = test_phonemes.float()
+
+    train_tensors = torch.unsqueeze(train_tensors, 1)
+    valid_tensors = torch.unsqueeze(valid_tensors, 1)
+    test_tensors = torch.unsqueeze(test_tensors, 1)
 
     class_probabilities = torch.mean(train_phonemes, dim=0)
     random_accuracy = torch.sum(class_probabilities ** 2)
@@ -425,89 +507,56 @@ if True:
     print("Bayes benchmark:", dot_product.item())
 
     print("data preparation")
-    w, h = train_tensors.size(1), train_tensors.size(2)
-    c = train_phonemes.size(1)
+    # w, h = train_tensors.size(1), train_tensors.size(2)
+    # c = train_phonemes.size(1)
 
-    train_tensors = train_tensors.flatten(start_dim=1)
-    test_tensors = test_tensors.flatten(start_dim=1)
+    # train_tensors = train_tensors.flatten(start_dim=1)
+    # test_tensors = test_tensors.flatten(start_dim=1)
 
     train_dataset = CustomDataset(train_tensors,
                                   train_phonemes)
+    valid_dataset = CustomDataset(valid_tensors,
+                                  valid_phonemes)
     test_dataset = CustomDataset(test_tensors,
                                  test_phonemes)
 
     print("batching")
     train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+    valid_loader = DataLoader(valid_dataset, batch_size=128, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
 
     print("Creating model")
-    model = nn.Sequential(nn.Linear(w*h, c)).to('mps')
-    # model = SimpleCNN().to("mps")
+    # model = nn.Sequential(nn.Linear(w*h, c)).to('mps')
+    model = SimpleCNN()
 
     del train_tensors
     del train_phonemes
 
     print("training")
-    train_and_plot_cnn(train_loader, test_loader, model.to("mps"), 50)
+    train_and_plot_cnn(train_loader, test_loader, valid_loader,
+                       model.to("mps"), 200)
 
     print("saving model")
-    torch.save(model.state_dict(), "model_new_data_ridge.pt")
-elif False:
-    bags = torch.load("data_phoneme_bag20;0.1;1000_150d.pth")
-    models = []
-    criterion = torch.nn.CrossEntropyLoss()
-    epochs = 2
-
-    test_data = CustomDataset(bags[2][0][:, :, :].float(),
-                              bags[2][1][:, :].float())
-    test_loader = DataLoader(test_data, batch_size=64, shuffle=True)
-
-    for i, (X_train, Y_train) in enumerate(bags[0]):
-        print("training model: ", i)
-        # Initialiser un nouveau modèle pour chaque bag
-        model = CNN_Phoneme()
-        optimizer = torch.optim.AdamW(model.parameters(), lr=10**(-4))
-
-        train_data = CustomDataset(X_train[:, :, :].float(),
-                                   Y_train[:, :].float())
-        train_loader = DataLoader(train_data, batch_size=64, shuffle=True)
-
-        train_and_plot_cnn(train_loader, test_loader, model, epochs)
-
-        models.append(model)
-
-    print("joint accuracy: ", bagging_accuracy(models, test_loader))
-
-    torch.save(models, "modèles50.pth")
-elif False:
-    bags = torch.load("data_phoneme_bag_150d.pth")
-    models = []
-    criterion = torch.nn.CrossEntropyLoss()
-    epochs = 5
-
-    test_data = CustomDataset(bags[2][0][:, :, :].float(),
-                              bags[2][1][:, :].float())
-    test_loader = DataLoader(test_data, batch_size=64, shuffle=True)
-
-    models = torch.load("modèles.pth")
-
-    print(bagging_accuracy(models, test_loader))
-elif True:
+    torch.save(model.state_dict(), "new_reduced_2conv.pt")
+else:
     print("loading data")
     ((train_tensors, train_phonemes),
      (valid_tensors, valid_phonemes),
-     (test_tensors, test_phonemes)) = torch.load('new_data_highf_270.pth')
+     (test_tensors, test_phonemes)) = torch.load('new_reduced2.pth')
 
     print("data preparation")
 
     train_tensors = train_tensors.float()
     train_phonemes = train_phonemes.float()
 
+    train_tensors = torch.unsqueeze(train_tensors, 1)
+    test_tensors = torch.unsqueeze(test_tensors, 1)
+
     test_tensors = test_tensors.float()
     test_phonemes = test_phonemes.float()
 
-    train_tensors = torch.unsqueeze(train_tensors, 1)
-    test_tensors = torch.unsqueeze(test_tensors, 1)
+    # train_tensors = torch.unsqueeze(train_tensors, 1)
+    # test_tensors = torch.unsqueeze(test_tensors, 1)
 
     # w, h = train_tensors.size(1), train_tensors.size(2)
     # c = train_phonemes.size(1)
@@ -527,29 +576,7 @@ elif True:
     # )
     model = SimpleCNN()
 
-    model.load_state_dict(torch.load("model_new_data_ridge.pt"))
+    model.load_state_dict(torch.load("new_reduced_2conv.pt"))
     print("computing acc per classes")
     probs, freq = calculate_empirical_probability(test_loader, model, 1)
     reg(probs, freq)
-
-exit()
-print("loading data")
-((train_tensors, train_phonemes),
-    (test_tensors, test_phonemes)) = torch.load('same.pth')
-
-print("data preparation")
-train_dataset = CustomDataset(train_tensors[:, :, :].float(),
-                              train_phonemes[:, :].float())
-test_dataset = CustomDataset(test_tensors[:, :, :].float(),
-                             test_phonemes[:, :].float())
-
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-model = AttentionRNN(50, 100, 100, 39)
-
-print("training")
-train_and_plot_cnn(train_loader, test_loader, model, 500)
-
-print("saving model")
-torch.save(model.state_dict(), "modelLLM.pt")

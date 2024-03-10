@@ -2,7 +2,6 @@ import pandas as pd
 import textgrid
 import os
 import matplotlib.pyplot as plt
-import numpy as np
 
 
 number_to_range = {
@@ -59,5 +58,7 @@ if __name__ == "__main__":
     # print_histo(get_phonemes("01"))
     df = get_phonemes('01')
     df['duration'] = df['end'] - df['start']
-    mean_durations = df.groupby('phoneme')['duration'].mean().sort_values(ascending=False)
+    mean_durations = (
+        df.groupby('phoneme')['duration'].mean()
+    ).sort_values(ascending=False)
     print(mean_durations)

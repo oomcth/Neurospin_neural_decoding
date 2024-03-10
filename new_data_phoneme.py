@@ -5,21 +5,40 @@ import torch.nn.functional as F
 import numpy as np
 from operator import itemgetter as getter
 import pandas as pd
-from copy import copy
 import torchvision.transforms as transforms
 from tqdm import tqdm
 
 
+device = torch.device("cuda" if torch.cuda.is_available()
+                      else "mps" if torch.backends.mps.is_available()
+                      else "cpu")
 pixel_simga = 0.05
 choices = ['2', '9', '9~', '<p:>', '?', '@', 'A', 'E', 'H', 'J', 'O', 'R', 'S',
            'Z', 'a', 'a~', 'b', 'd', 'e', 'e~', 'f', 'g', 'i', 'j', 'k', 'l',
            'm', 'n', 'o', 'o~', 'p', 's', 't', 'u', 'v', 'w', 'y', 'z', 'N']
+channels = ['MEG0213', 'MEG0243', 'MEG1613', 'MEG0222', 'MEG0232', 'MEG1622',
+            'MEG0413', 'MEG0443', 'MEG1813', 'MEG2423', 'MEG1333', 'MEG1323',
+            'MEG1312', 'MEG1342', 'MEG2412', 'MEG2223', 'MEG1133', 'MEG1123']
 
 
-def load(subject, run_id, equilibrate=False, freq=75):
+def load(subject, run_id, equilibrate=False, freq=75, types=[3012]):
     df_phonemes = get_phonemes(run_id)
 
     raw, meta = read_raw(subject, run_id, False, "auditory")
+
+    channels_to_keep = []
+    drop = list(set(torch.load("Data_autoenc/planbads1:10.pth")))
+
+    for ch in raw.info['chs']:
+        if (ch['coil_type'] in types and not (ch['ch_name'] in drop)
+           and ch['ch_name'] in channels):
+            channels_to_keep.append(ch['ch_name'])
+        else:
+            pass
+
+    raw = raw.pick_channels(channels_to_keep)
+
+    # raw = maxwell_filter(raw)
 
     gap = meta['onset'][0] - df_phonemes['start'][1]
 
@@ -70,28 +89,45 @@ def equilibrate_phonemes(df, freq=75):
 
 
 def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
-                         freq=75):
+                         freq=75, i=0, random_offset=False, types=[3022]):
 
     train_ids = ["01", "02", "03", "04", "05", "06", "07"]
-    valid_ids = ["08"]
-    test_ids = ["09"]
+    if i == 0:
+        valid_ids = ["08"]
+        test_ids = ["09"]
+    else:
+        valid_ids = []
+        test_ids = []
 
     train_tensors, train_phonemes = [], []
     for id in train_ids:
-        tensor_meg, df_phonemes = load(subject, id, equilibrate, freq)
-        temp_tensors = [tensor_meg[:, int((df_phonemes.loc[i, 'start'] + 0.7)
-                                          * 100):
-                                   int((df_phonemes.loc[i, 'start'] + 0.7)
-                                       * 100) + 100]
-                        for i in range(len(df_phonemes))]
+        tensor_meg, df_phonemes = load(subject, id, equilibrate, freq,
+                                       types=types)
+        n = len(df_phonemes)
+        if random_offset:
+            offset = np.random.randint(-8, 9, size=n)
+            temp_tensors = [tensor_meg[:,
+                                       (int((df_phonemes.loc[i, 'start'] + 0.7)
+                                            * 100) + offset[i]):
+                                       (int((df_phonemes.loc[i, 'start'] + 0.7)
+                                            * 100) + 100 + offset[i])]
+                            for i in range(len(df_phonemes))]
+        else:
+            temp_tensors = [tensor_meg[:,
+                                       (int((df_phonemes.loc[i, 'start'] + 0.7)
+                                            * 100)):
+                                       (int((df_phonemes.loc[i, 'start'] + 0.7)
+                                            * 100) + 100)]
+                            for i in range(len(df_phonemes))]
         train_tensors += temp_tensors
         train_phonemes += df_phonemes['phoneme'].tolist()
 
     valid_tensors, valid_phonemes = [], []
     for id in valid_ids:
-        tensor_meg, df_phonemes = load(subject, id)
-        temp_tensors = [tensor_meg[:, int((df_phonemes.loc[i, 'start'] + 0.7)
-                                          * 100):
+        tensor_meg, df_phonemes = load(subject, id, types=types)
+        temp_tensors = [tensor_meg[:,
+                                   int((df_phonemes.loc[i, 'start'] + 0.7)
+                                       * 100):
                                    int((df_phonemes.loc[i, 'start'] + 0.7)
                                        * 100) + 100]
                         for i in range(len(df_phonemes))]
@@ -100,28 +136,36 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
 
     test_tensors, test_phonemes = [], []
     for id in test_ids:
-        tensor_meg, df_phonemes = load(subject, id)
-        temp_tensors = [tensor_meg[:, int((df_phonemes.loc[i, 'start'] + 0.7)
-                                          * 100):
+        tensor_meg, df_phonemes = load(subject, id, types=types)
+        temp_tensors = [tensor_meg[:,
+                                   int((df_phonemes.loc[i, 'start'] + 0.7)
+                                       * 100):
                                    int((df_phonemes.loc[i, 'start'] + 0.7)
                                        * 100) + 100]
                         for i in range(len(df_phonemes))]
         test_tensors += temp_tensors
         test_phonemes += df_phonemes['phoneme'].tolist()
 
-    train_tensors = torch.stack(train_tensors, dim=0)
-    valid_tensors = torch.stack(valid_tensors, dim=0)
-    test_tensors = torch.stack(test_tensors, dim=0)
+    print("stack + approx norm")
+    train_tensors = torch.stack(train_tensors, dim=0).float()
+    train_tensors = train_tensors
+    if i == 0:
+        valid_tensors = torch.stack(valid_tensors, dim=0).float()
+        valid_tensors = valid_tensors
+        test_tensors = torch.stack(test_tensors, dim=0).float()
+        test_tensors = test_tensors
 
-    train_tensors[:, :-19, :] *= 10**12
-    valid_tensors[:, :-19, :] *= 10**12
-    test_tensors[:, :-19, :] *= 10**12
+    train_tensors[:, :, :] *= 10**12
+    if i == 0:
+        valid_tensors[:, :, :] *= 10**12
+        test_tensors[:, :, :] *= 10**12
 
     if clamp:
         print("clamping")
         train_tensors.clamp(-100, 100)
-        valid_tensors.clamp(-100, 100)
-        test_tensors.clamp(-100, 100)
+        if i == 0:
+            valid_tensors.clamp(-100, 100)
+            test_tensors.clamp(-100, 100)
         print("done")
 
     if noise:
@@ -136,19 +180,24 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
 
     print("one hot encoding...")
     indices = [choices.index(value) for value in train_phonemes]
-    train_phonemes = F.one_hot(torch.tensor(indices), num_classes=len(choices))
+    train_phonemes = F.one_hot(torch.tensor(indices),
+                               num_classes=len(choices))
 
-    indices = [choices.index(value) for value in valid_phonemes]
-    valid_phonemes = F.one_hot(torch.tensor(indices), num_classes=len(choices))
+    if i == 0:
+        indices = [choices.index(value) for value in valid_phonemes]
+        valid_phonemes = F.one_hot(torch.tensor(indices),
+                                   num_classes=len(choices))
 
-    indices = [choices.index(value) for value in test_phonemes]
-    test_phonemes = F.one_hot(torch.tensor(indices), num_classes=len(choices))
+        indices = [choices.index(value) for value in test_phonemes]
+        test_phonemes = F.one_hot(torch.tensor(indices),
+                                  num_classes=len(choices))
     print("done")
 
     print('deletion of certain rows')
-    train_tensors = train_tensors[:, :-19, :]
-    valid_tensors = valid_tensors[:, :-19, :]
-    test_tensors = test_tensors[:, :-19, :]
+    train_tensors = train_tensors[:, :, :]
+    if i == 0:
+        valid_tensors = valid_tensors[:, :, :]
+        test_tensors = test_tensors[:, :, :]
     print('done')
 
     norm = False
@@ -158,21 +207,26 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
             (train_tensors - train_tensors.mean([1, 2], keepdim=True)) /
             train_tensors.std([1, 2], keepdim=True)
         )
+        if i == 0:
+            valid_tensors = (
+                (valid_tensors - valid_tensors.mean([1, 2], keepdim=True)) /
+                valid_tensors.std([1, 2], keepdim=True)
+            )
 
-        valid_tensors = (
-            (valid_tensors - valid_tensors.mean([1, 2], keepdim=True)) /
-            valid_tensors.std([1, 2], keepdim=True)
-        )
-
-        test_tensors = (
-            (test_tensors - test_tensors.mean([1, 2], keepdim=True)) /
-            test_tensors.std([1, 2], keepdim=True)
-        )
+            test_tensors = (
+                (test_tensors - test_tensors.mean([1, 2], keepdim=True)) /
+                test_tensors.std([1, 2], keepdim=True)
+            )
         print("done")
-
-    return ((train_tensors, train_phonemes),
-            (valid_tensors, valid_phonemes),
-            (test_tensors, test_phonemes))
+    print("saving")
+    if i == 0:
+        return ((train_tensors.float(), train_phonemes.float()),
+                (valid_tensors.float(), valid_phonemes.float()),
+                (test_tensors.float(), test_phonemes.float()))
+    else:
+        return ((train_tensors.float(), train_phonemes.float()),
+                (valid_tensors, valid_phonemes),
+                (test_tensors, test_phonemes))
 
 
 def uneven_stack(tensors, resize=False):
@@ -215,6 +269,9 @@ def add_noise(tensor):
 
 
 if __name__ == "__main__":
-    data = generate_samples_All("1", False, False, True, 75)
-    torch.save(data, 'new_data_highf.pth')
-    del data
+    for i in range(1):
+        data = generate_samples_All("1", False, False, True, 75,
+                                    i=0, random_offset=False,
+                                    types=[3012])  # 3022, 3012, 0
+        torch.save(data, 'smths.pth')
+        del data

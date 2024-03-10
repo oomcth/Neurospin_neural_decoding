@@ -9,6 +9,7 @@ from copy import copy
 import torchvision.transforms as transforms
 from tqdm import tqdm
 
+
 sigma = 0.05
 pixel_simga = 0.05
 offset = 15
