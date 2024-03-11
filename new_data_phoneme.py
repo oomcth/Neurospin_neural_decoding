@@ -5,10 +5,10 @@ import torch.nn.functional as F
 import numpy as np
 from operator import itemgetter as getter
 import pandas as pd
-import torchvision.transforms as transforms
-from tqdm import tqdm
+from Clusters import Frontal, Parietal, Left, Right, Occipital, Crown
 
 
+Clusters = [Frontal, Parietal, Left, Right, Occipital, Crown]
 device = torch.device("cuda" if torch.cuda.is_available()
                       else "mps" if torch.backends.mps.is_available()
                       else "cpu")
@@ -16,12 +16,13 @@ pixel_simga = 0.05
 choices = ['2', '9', '9~', '<p:>', '?', '@', 'A', 'E', 'H', 'J', 'O', 'R', 'S',
            'Z', 'a', 'a~', 'b', 'd', 'e', 'e~', 'f', 'g', 'i', 'j', 'k', 'l',
            'm', 'n', 'o', 'o~', 'p', 's', 't', 'u', 'v', 'w', 'y', 'z', 'N']
-channels = ['MEG0213', 'MEG0243', 'MEG1613', 'MEG0222', 'MEG0232', 'MEG1622',
-            'MEG0413', 'MEG0443', 'MEG1813', 'MEG2423', 'MEG1333', 'MEG1323',
-            'MEG1312', 'MEG1342', 'MEG2412', 'MEG2223', 'MEG1133', 'MEG1123']
+# channels = ['MEG0213', 'MEG0243', 'MEG1613', 'MEG0222', 'MEG0232', 'MEG1622',
+#             'MEG0413', 'MEG0443', 'MEG1813', 'MEG2423', 'MEG1333', 'MEG1323',
+#             'MEG1312', 'MEG1342', 'MEG2412', 'MEG2223', 'MEG1133', 'MEG1123']
 
 
-def load(subject, run_id, equilibrate=False, freq=75, types=[3012]):
+def load(subject, run_id, equilibrate=False, freq=75,
+         types=[3012], channels=[], reorder=False):
     df_phonemes = get_phonemes(run_id)
 
     raw, meta = read_raw(subject, run_id, False, "auditory")
@@ -31,12 +32,14 @@ def load(subject, run_id, equilibrate=False, freq=75, types=[3012]):
 
     for ch in raw.info['chs']:
         if (ch['coil_type'] in types and not (ch['ch_name'] in drop)
-           and ch['ch_name'] in channels):
+           and (ch['ch_name'] in channels or channels == [])):
             channels_to_keep.append(ch['ch_name'])
         else:
             pass
 
     raw = raw.pick_channels(channels_to_keep)
+    if reorder:
+        raw = raw.copy().reorder_channels(channels_to_keep)
 
     # raw = maxwell_filter(raw)
 
@@ -50,10 +53,11 @@ def load(subject, run_id, equilibrate=False, freq=75, types=[3012]):
     df_phonemes['delta'] = df_phonemes['end'] - df_phonemes['start']
 
     tensor_meg = torch.tensor(raw.get_data())
+    print(tensor_meg.size())
 
     df_phonemes = df_phonemes.drop(
         df_phonemes[df_phonemes['delta'] > 30 / 100].index
-        )
+    )
 
     del raw
     del meta
@@ -89,7 +93,8 @@ def equilibrate_phonemes(df, freq=75):
 
 
 def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
-                         freq=75, i=0, random_offset=False, types=[3022]):
+                         freq=75, i=0, random_offset=False, types=[3022],
+                         channels=[], reorder=False):
 
     train_ids = ["01", "02", "03", "04", "05", "06", "07"]
     if i == 0:
@@ -102,7 +107,8 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
     train_tensors, train_phonemes = [], []
     for id in train_ids:
         tensor_meg, df_phonemes = load(subject, id, equilibrate, freq,
-                                       types=types)
+                                       types=types, channels=channels,
+                                       reorder=reorder)
         n = len(df_phonemes)
         if random_offset:
             offset = np.random.randint(-8, 9, size=n)
@@ -124,7 +130,8 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
 
     valid_tensors, valid_phonemes = [], []
     for id in valid_ids:
-        tensor_meg, df_phonemes = load(subject, id, types=types)
+        tensor_meg, df_phonemes = load(subject, id, types=types,
+                                       channels=channels, reorder=reorder)
         temp_tensors = [tensor_meg[:,
                                    int((df_phonemes.loc[i, 'start'] + 0.7)
                                        * 100):
@@ -136,7 +143,8 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
 
     test_tensors, test_phonemes = [], []
     for id in test_ids:
-        tensor_meg, df_phonemes = load(subject, id, types=types)
+        tensor_meg, df_phonemes = load(subject, id, types=types,
+                                       channels=channels, reorder=reorder)
         temp_tensors = [tensor_meg[:,
                                    int((df_phonemes.loc[i, 'start'] + 0.7)
                                        * 100):
@@ -148,12 +156,9 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
 
     print("stack + approx norm")
     train_tensors = torch.stack(train_tensors, dim=0).float()
-    train_tensors = train_tensors
     if i == 0:
         valid_tensors = torch.stack(valid_tensors, dim=0).float()
-        valid_tensors = valid_tensors
         test_tensors = torch.stack(test_tensors, dim=0).float()
-        test_tensors = test_tensors
 
     train_tensors[:, :, :] *= 10**12
     if i == 0:
@@ -229,30 +234,6 @@ def generate_samples_All(subject, noise=False, clamp=False, equilibrate=True,
                 (test_tensors, test_phonemes))
 
 
-def uneven_stack(tensors, resize=False):
-    if not resize:
-        n = len(tensors)
-        output_tensor = torch.zeros(n, 325, 50)
-
-        for i, tensor in enumerate(tensors):
-            n_cols = min(tensor.size(1), 50)
-            output_tensor[i, :, :n_cols] = tensor[:, :n_cols]
-
-        return output_tensor
-    else:
-        transformation = transforms.Resize((325, 306), antialias=True)
-
-        tensors_redimensionnes = []
-        print("resizing")
-        for tensor in tqdm(tensors):
-            tensor = tensor.unsqueeze(0)
-            tensor_redimensionne = transformation(tensor)
-
-            tensors_redimensionnes.append(tensor_redimensionne)
-            del tensor
-        return torch.stack(tensors_redimensionnes).squeeze(1)
-
-
 def add_noise(tensor):
 
     n_percent = 0.25
@@ -268,10 +249,21 @@ def add_noise(tensor):
     return temp
 
 
+# 3022, 3012, 0
 if __name__ == "__main__":
-    for i in range(1):
-        data = generate_samples_All("1", False, False, True, 75,
-                                    i=0, random_offset=False,
-                                    types=[3012])  # 3022, 3012, 0
-        torch.save(data, 'smths.pth')
-        del data
+    drop = list(set(torch.load("Data_autoenc/planbads1:10.pth")))
+    channels = []
+    size = []
+    for i, cluster in enumerate(Clusters):
+        cluster = list(set(cluster) - set(drop))
+        channels += cluster
+        size.append(len(cluster))
+    data = generate_samples_All("1", False, False, True, 75,
+                                i=0, random_offset=False,
+                                types=[3012], channels=channels,
+                                reorder=True)
+
+    torch.save(data, 'clusterAggred.pth')
+    del data
+    for i in size:
+        print(i)

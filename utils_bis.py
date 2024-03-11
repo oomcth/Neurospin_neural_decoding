@@ -6,9 +6,7 @@ import pandas as pd
 import mne
 import mne_bids
 import matplotlib
-import matplotlib.pyplot as plt
 matplotlib.use('agg')
-from mne.preprocessing import find_bad_channels_maxwell
 
 sys.path.append('neurospin-petit-prince-main/decoding/ntbk')
 from utils import (
@@ -120,11 +118,20 @@ def read_raw(subject, run_id, events_return=False, modality="auditory"):
 if __name__ == "__main__":
     raw, _, _ = read_raw('7', '05', True, "auditory")
 
+    occurrences = {}
+
+    for ch in raw.info['chs']:
+        if ch['coil_type'] in occurrences:
+            occurrences[ch['coil_type']] += 1
+        else:
+            occurrences[ch['coil_type']] = 1
+    print(occurrences)
+
     # raw_sss = mne.preprocessing.maxwell_filter(raw)
     # auto_noisy_chs, auto_flat_chs, auto_scores = find_bad_channels_maxwell(
     #     raw,
-        # cross_talk=crosstalk_file,
-        # calibration=fine_cal_file,
+    # cross_talk=crosstalk_file,
+    # calibration=fine_cal_file,
     #     return_scores=True,
     #     verbose=True,
     # )
